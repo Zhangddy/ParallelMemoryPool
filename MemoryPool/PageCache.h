@@ -23,6 +23,8 @@ private:
 	PageCache(const PageCache&) = delete;
 
 	SpanList _spanLists[MAX_PAGES];
+
+	// 用于记录各个span的页号和所在空间
 	std::unordered_map<PAGE_ID, Span*> _idSpanMap;
 
 	std::mutex _mtx;

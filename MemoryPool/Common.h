@@ -18,6 +18,7 @@ const size_t NFREE_LIST = MAX_SIZE / 8;
 const size_t MAX_PAGES = 129;
 const size_t PAGE_SHIFT = 12; // 4k为页移位
 
+// 用于获取下一个节点
 inline void*& NextObj(void* obj)
 {
 	return *((void**)obj);
@@ -52,7 +53,7 @@ public:
 
 	size_t PopRange(void*& start, void*& end, size_t num)
 	{
-		size_t actualNum = 0;
+		size_t actualNum = 0; // 实际返回的长度, 因为实际返回的可能不够
 		void* prev = nullptr;
 		void* cur = _freelist;
 		for (; actualNum < num && cur != nullptr; ++actualNum)
@@ -94,11 +95,10 @@ class SizeClass
 {
 public:
 
-	// 控制在[1%，10%]左右的内碎片浪费
-	// [1,128] 8byte对齐 freelist[0,16)
-	// [129,1024] 16byte对齐 freelist[16,72)
-	// [1025,8*1024] 128byte对齐 freelist[72,128)
-	// [8*1024+1,64*1024] 1024byte对齐 freelist[128,184)
+	// [1,128]				8byte对齐 
+	// [129,1024]			16byte对齐 
+	// [1025,8*1024]		128byte对齐 
+	// [8*1024+1,64*1024]	1024byte对齐 
 	static size_t _RoundUp(size_t size, size_t alignment)
 	{
 		return (size + alignment - 1)&(~(alignment - 1));
@@ -184,11 +184,8 @@ public:
 	}
 };
 
-//////////////////////////////////////////////////
 // span 跨度  管理页为单位的内存对象，本质是方便做合并，解决内存碎片
-// 2^64 / 2^12 == 2^52
 
-// 针对windows
 #ifdef _WIN32
 typedef unsigned int PAGE_ID;
 #else
@@ -197,14 +194,13 @@ typedef unsigned long long PAGE_ID;
 
 struct Span
 {
-	PAGE_ID _pageid = 0; // 页号
-	PAGE_ID _pagesize = 0;   // 页的数量
+	PAGE_ID _pageid = 0;		// 页号
+	PAGE_ID _pagesize = 0;		// 页的数量
 
-	FreeList _freeList;  // 对象自由链表
-	size_t _objSize = 0; // 自由链表对象大小
- 	int _usecount = 0;   // 内存块对象使用计数
+	FreeList _freeList;			// 对象自由链表
+	size_t _objSize = 0;		// 自由链表对象大小
+ 	int _usecount = 0;			// 内存块对象使用计数
 
-	//size_t objsize;  // 对象大小
 	Span* _next = nullptr;
 	Span* _prev = nullptr;
 };
@@ -212,6 +208,7 @@ struct Span
 class SpanList
 {
 public:
+	// 带有节点的双向循环链表
 	SpanList()
 	{
 		_head = new Span;
@@ -294,13 +291,14 @@ private:
 inline static void* SystemAlloc(size_t num_page)
 {
 #ifdef _WIN32
-	void* ptr = VirtualAlloc(0, num_page*(1 << PAGE_SHIFT),
-		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	void* ptr = VirtualAlloc(0, num_page * (1 << PAGE_SHIFT), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
-	// brk mmap等
+	// Linux下是brk...
 #endif
 	if (ptr == nullptr)
+	{
 		throw std::bad_alloc();
+	}
 
 	return ptr;
 }

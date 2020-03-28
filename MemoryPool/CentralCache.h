@@ -14,7 +14,7 @@ public:
 
 	// 从spanlist 或者 page cache获取一个span
 	Span* GetOneSpan(size_t size);
-
+	// 饿汉
 	static CentralCache& GetInstance()
 	{
 		static CentralCache inst;
@@ -24,7 +24,7 @@ public:
 private:
 	CentralCache()
 	{}
-
+	// 删除默认构造函数
 	CentralCache(const CentralCache&) = delete;
 
 	SpanList _spanLists[NFREE_LIST];
