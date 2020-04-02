@@ -1,26 +1,25 @@
 #pragma once
-
 #include <iostream>
 #include <assert.h>
 #include <unordered_map>
 #include <thread>
 #include <mutex>
-
-#ifdef _WIN32
 #include <windows.h>
-#endif 
 
 using std::endl;
 using std::cout;
 
 const size_t MAX_SIZE = 64 * 1024;
-const size_t NFREE_LIST = MAX_SIZE / 8;
+const size_t NFREE_LIST = 240;//MAX_SIZE / 8; // 8K
 const size_t MAX_PAGES = 129;
-const size_t PAGE_SHIFT = 12; // 4k为页移位
+const size_t PAGE_SHIFT = 12; 
 
 // 用于获取下一个节点
+// 64位下指针大小为8, 故分配最小空间应为8
 inline void*& NextObj(void* obj)
 {
+	// obj为void*指针
+	// 需要得到它存的地址的所指向空间的地址
 	return *((void**)obj);
 }
 
@@ -61,13 +60,10 @@ public:
 			prev = cur;
 			cur = NextObj(cur);
 		}
-
 		start = _freelist;
 		end = prev;
 		_freelist = cur;
-
 		_num -= actualNum;
-
 		return actualNum;
 	}
 
@@ -91,71 +87,96 @@ private:
 	size_t _num = 0;
 };
 
-class SizeClass
+class SizeTools
 {
 public:
-
-	// [1,128]				8byte对齐 
-	// [129,1024]			16byte对齐 
-	// [1025,8*1024]		128byte对齐 
-	// [8*1024+1,64*1024]	1024byte对齐 
-	static size_t _RoundUp(size_t size, size_t alignment)
+	static size_t dealRoundUp(size_t size, size_t alignment)
 	{
 		return (size + alignment - 1)&(~(alignment - 1));
 	}
-
-	// [9-16] + 7 = [16-23] -> 16 8 4 2 1
-	// [17-32] + 15 = [32,47] ->32 16 8 4 2 1
+	// 返回一个对齐结果, 需要的内存越大对齐数越大, 防止大内存的链表过长
 	static inline size_t RoundUp(size_t size)
 	{
 		assert(size <= MAX_SIZE);
+		/*
+		if (size % 8 != 0)
+		{
+			return (size / 8 + 1) * 8;
+		}
+		else
+		{
+			return size;
+		}
+		*/
+		// 除法, 取模运算效率低, 参考原码: 使用移位运算
 
-		if (size <= 128){
-			return _RoundUp(size, 8);
+		// 返回一个适合的对齐数, 用于分配(控制内部碎片不要太大)
+
+		// [1,128]				8byte对齐	 freelist[0,16)
+		// [129,1024]			16byte对齐	 freelist[16,72)
+		// [1025,8*1024]		128byte对齐  freelist[72,128)
+		// [8*1024+1,64*1024]	1024byte对齐 freelist[128,184)
+		// 平均控制内存碎片到10%
+		// 全部以8对齐, 后面得链表太长了
+		if (size <= 128)
+		{
+			return dealRoundUp(size, 8);
 		}
-		else if (size <= 1024){
-			return _RoundUp(size, 16);
+		else if (size <= 1024)
+		{
+			return dealRoundUp(size, 16);
 		}
-		else if (size <= 8192){
-			return _RoundUp(size, 128);
+		else if (size <= 8192)
+		{
+			return dealRoundUp(size, 128);
 		}
-		else if (size <= 65536){
-			return _RoundUp(size, 1024);
+		else if (size <= 65536)
+		{
+			return dealRoundUp(size, 1024);
 		}
 
 		return -1;
 	}
-
-	// [9-16] + 7 = [16-23]
-	static size_t _ListIndex(size_t size, size_t align_shift)
+	 
+	static size_t dealListIndex(size_t size, size_t align_shift = 8)
 	{
 		return ((size + (1 << align_shift) - 1) >> align_shift) - 1;
 	}
 
+	// 返回一个去哪个链的下标
 	static size_t ListIndex(size_t size)
 	{
 		assert(size <= MAX_SIZE);
+		/*
+		if (size % 8 == 0)
+		{
+			return size / 8 - 1;
+		}
+		else
+		{
+			return size / 8;
+		}
+		*/
 
-		// 每个区间有多少个链
+		// 参考原码, 一个更加快速的方式, 减少除模运算
 		static int group_array[4] = { 16, 56, 56, 56 };
 		if (size <= 128){
-			return _ListIndex(size, 3);
+			return dealListIndex(size, 3);
 		}
 		else if (size <= 1024){
-			return _ListIndex(size - 128, 4) + group_array[0];
+			return dealListIndex(size - 128, 4) + group_array[0];
 		}
 		else if (size <= 8192){
-			return _ListIndex(size - 1024, 7) + group_array[1] + group_array[0];
+			return dealListIndex(size - 1024, 7) + group_array[1] + group_array[0];
 		}
 		else if (size <= 65536){
-			return _ListIndex(size - 8192, 10) + group_array[2] + group_array[1] +
-				group_array[0];
+			return dealListIndex(size - 8192, 10) + group_array[2] + group_array[1] + group_array[0];
 		}
-
 		return -1;
 	}
 
 	// [2,512]个之间
+	// NumMoveSize得到要分配空间的个数, 会多取一些
 	static size_t NumMoveSize(size_t size)
 	{
 		if (size == 0)
@@ -184,31 +205,27 @@ public:
 	}
 };
 
-// span 跨度  管理页为单位的内存对象，本质是方便做合并，解决内存碎片
-
 #ifdef _WIN32
 typedef unsigned int PAGE_ID;
 #else
 typedef unsigned long long PAGE_ID;
-#endif // _WIN32
+#endif 
 
 struct Span
 {
-	PAGE_ID _pageid = 0;		// 页号
-	PAGE_ID _pagesize = 0;		// 页的数量
-
+	PAGE_ID  _pageid = 0;		// 页号
+	PAGE_ID  _pagesize = 0;		// 页的数量
 	FreeList _freeList;			// 对象自由链表
-	size_t _objSize = 0;		// 自由链表对象大小
- 	int _usecount = 0;			// 内存块对象使用计数
-
-	Span* _next = nullptr;
-	Span* _prev = nullptr;
+	size_t	 _objSize = 0;		// 自由链表对象大小
+ 	int		 _usecount = 0;		// 内存块对象使用计数
+	Span*	 _next = nullptr;
+	Span*	 _prev = nullptr;
 };
 
+// 使用头结点操作双向循环链表, 提高效率
 class SpanList
 {
 public:
-	// 带有节点的双向循环链表
 	SpanList()
 	{
 		_head = new Span;
@@ -250,7 +267,6 @@ public:
 	{
 		Span* prev = pos->_prev;
 
-		// prev newspan pos
 		prev->_next = newspan;
 		newspan->_next = pos;
 		pos->_prev = newspan;
@@ -288,12 +304,14 @@ private:
 	std::mutex _mtx;
 };
 
+// 向操作系统申请以页为单位的空间
 inline static void* SystemAlloc(size_t num_page)
 {
 #ifdef _WIN32
 	void* ptr = VirtualAlloc(0, num_page * (1 << PAGE_SHIFT), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
-	// Linux下是brk...
+	// Linux: brk
+	// TODO
 #endif
 	if (ptr == nullptr)
 	{
